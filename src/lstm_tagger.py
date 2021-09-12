@@ -7,6 +7,9 @@ from torch import nn, optim
 import time
 from torch.nn.utils.rnn import pad_sequence
 from tqdm import tqdm
+import itertools
+import json
+import collections
 
 
 def read_train_dataset(dataset_path, words, tags, word2index, tag2index, index2tag):
@@ -87,7 +90,7 @@ def read_dev_dataset(dataset_path, words, tags, word2index, tag2index):
         tags[-1].append(tag2index[tag])
 
 
-def read_dev_datasets(dataset_paths):
+def read_dev_datasets(dataset_paths, word2index, tag2index):
     # Create lists of lists to read test corpus into
     # [[word11, word12, ...], [word21, word22, ...]]
     # [[tag11, tag12, ...], [tag21, tag22, ...]]
@@ -153,40 +156,32 @@ def compute_scores(gold_tags, pred_tags, tag2index):
     return acc
 
 
-if __name__ == '__main__':
-
-    train_paths = ["../data/train/xh.gold.train"] #, "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
-    dev_paths = ["../data/dev/xh.gold.dev"] #, "../data/dev/zu.gold.dev", "../data/dev/nr.gold.dev", "../data/dev/ss.gold.dev"]
-
-    train_words, train_tags, word2index, tag2index, index2tag = read_train_datasets(train_paths)
-    dev_words, dev_tags = read_dev_datasets(dev_paths)
+def train_model(train_words, train_tags, word2index, tag2index, index2tag, dev_words, dev_tags, params):
+    input_size = params["input_size"]
+    hidden_size = params["hidden_size"]
+    num_layers = params["num_layers"]
+    dropout = params["dropout"]
+    num_epochs = params["num_epochs"]
+    weight_decay = params["weight_decay"]
+    lr_patience = params["lr_patience"]
+    lr = params["lr"]
+    batch_size = params["batch_size"]
+    clip = params["clip"]
+    log_interval = params["log_interval"]
 
     index2word = {v: k for k, v in word2index.items()}
+    word_vocab_size = len(word2index)
+    tag_vocab_size = len(tag2index)
     word_pad_id = word2index["<pad>"]
     tag_pad_id = tag2index["<pad>"]
     num_tags = len(tag2index)
-
-    word_vocab_size = len(word2index)
-    tag_vocab_size = len(tag2index)
-    input_size = 128
-    hidden_size = 256
-    num_layers = 1
-    dropout = 0.2
-    num_epochs = 10
-    weight_decay = 1e-5
-    lr_patience = 2
-    lr = 0.001
-    batch_size = 64
-    bptt_len = 120
-    clip = 1.0
-    log_interval = 10
-    criterion = nn.CrossEntropyLoss(ignore_index=tag_pad_id)
 
     # Set up model and training
     model = LSTMTagger(word_vocab_size, tag_vocab_size, input_size, hidden_size, num_layers, dropout, word_pad_id)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)  # Adam with proper weight decay
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=lr_patience, verbose=True,
                                                      factor=0.5)  # Half the learning rate
+    criterion = nn.CrossEntropyLoss(ignore_index=tag_pad_id)
 
     # Train model
     start = time.time()
@@ -215,7 +210,7 @@ if __name__ == '__main__':
             logits = model(batch_words, init_state_h, init_state_c)
 
             loss = criterion(input=logits.view(-1, num_tags), target=batch_tags.view(-1))
-            #nll = - torch.sum(log_alpha) / torch.numel(input_ids)
+            # nll = - torch.sum(log_alpha) / torch.numel(input_ids)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
             optimizer.step()
@@ -263,7 +258,64 @@ if __name__ == '__main__':
 
     end = time.time()
     print("Training completed in %fs." % (end - start))
-    #print("| epoch {:3d} | valid loss {:5.2f} | ".format(best_epoch, best_loss))
+
+    return best_loss, acc, best_epoch
+    # print("| epoch {:3d} | valid loss {:5.2f} | ".format(best_epoch, best_loss))
 
 
+def grid_search():
+    grid = {}
+    grid["input_size"] = [128, 256]
+    grid["hidden_size"] = [256, 512]
+    grid["num_layers"] = [1]
+    grid["dropout"] = [0.2]
+    grid["num_epochs"] = [1]
+    grid["weight_decay"] = [1e-5]
+    grid["lr_patience"] = [2]
+    grid["lr"] = [0.01]
+    grid["batch_size"] = [64]
+    grid["clip"] = [1.0]
+    grid["log_interval"] = [10]
 
+    keys, values = zip(*grid.items())
+    grid = [dict(zip(keys, v)) for v in itertools.product(*values)]
+
+    grid_search = {}
+    for params in grid:
+        loss, acc, epoch = train_one_model(params)
+        grid_search[json.dumps(params)] = {"loss": loss, "acc": acc, "epoch": epoch}
+
+    sorted_grid = collections.OrderedDict(sorted(grid_search.items(), key=lambda t:t[1]["acc"], reverse=True))
+
+    for key in sorted_grid:
+        print(sorted_grid[key])
+
+
+def train_one_model(params):
+    return train_model(train_words, train_tags, word2index, tag2index, index2tag, dev_words, dev_tags, params)
+
+
+if __name__ == '__main__':
+    params = {}
+    params["input_size"] = 128
+    params["hidden_size"] = 256
+    params["num_layers"] = 1
+    params["dropout"] = 0.2
+    params["num_epochs"] = 50
+    params["weight_decay"] = 1e-5
+    params["lr_patience"] = 2
+    params["lr"] = 0.01
+    params["batch_size"] = 64
+    params["clip"] = 1.0
+    params["log_interval"] = 10
+    #train_one_model(params)
+
+    train_paths = ["../data/train/xh.gold.train", "../data/train/zu.gold.train", "../data/train/nr.gold.train",
+                   "../data/train/ss.gold.train"]
+    dev_paths = ["../data/dev/xh.gold.dev", "../data/dev/zu.gold.dev", "../data/dev/nr.gold.dev",
+                 "../data/dev/ss.gold.dev"]
+
+    train_words, train_tags, word2index, tag2index, index2tag = read_train_datasets(train_paths)
+    dev_words, dev_tags = read_dev_datasets(dev_paths, word2index, tag2index)
+
+    grid_search()
