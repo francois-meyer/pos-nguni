@@ -6,6 +6,7 @@ import torch
 from torch import nn, optim
 import time
 from torch.nn.utils.rnn import pad_sequence
+from tqdm import tqdm
 
 
 def read_train_dataset(dataset_path, words, tags, word2index, tag2index, index2tag):
@@ -131,7 +132,8 @@ class LSTMTagger(nn.Module):
         self.fc = nn.Linear(hidden_size, tag_vocab_size)
 
     def forward(self, input_ids, init_state_h, init_state_c):
-        embeddings = self.drop(self.embedding(input_ids))
+        embeddings = self.embedding(input_ids)
+        embeddings = self.drop(embeddings)
         hidden_states, final_states = self.lstm(embeddings, (init_state_h, init_state_c))
         output = self.drop(hidden_states)
         logits = self.fc(output)
@@ -165,10 +167,10 @@ if __name__ == '__main__':
     weight_decay = 1e-5
     lr_patience = 2
     lr = 0.001
-    batch_size = 12
+    batch_size = 64
     bptt_len = 120
     clip = 1.0
-    log_interval = 1
+    log_interval = 10
     criterion = nn.CrossEntropyLoss(ignore_index=tag_pad_id)
 
     # Set up model and training
@@ -185,9 +187,11 @@ if __name__ == '__main__':
     for epoch in range(1, num_epochs + 1):
         total_loss = 0
 
+        bar = tqdm(total=len(list(range(0, len(train_words), batch_size))))
         for batch_num, batch_pos in enumerate(range(0, len(train_words), batch_size)):
 
             batch_words = train_words[batch_pos: batch_pos + batch_size]
+            bar.update(1)
             batch_words = [torch.tensor(batch_words[i]) for i in range(len(batch_words))]
             batch_words = pad_sequence(batch_words, padding_value=word_pad_id)
 
@@ -198,7 +202,7 @@ if __name__ == '__main__':
             model.train()
             model.zero_grad()
 
-            init_state_h, init_state_c = model.init_states(batch_size)
+            init_state_h, init_state_c = model.init_states(batch_words.shape[-1])
             logits = model(batch_words, init_state_h, init_state_c)
 
             loss = criterion(input=logits.view(-1, num_tags), target=batch_tags.view(-1))
