@@ -22,40 +22,32 @@ def read_train_dataset(dataset_path, words, tags, word2index, tag2index, index2t
         word, morphs, tag = line.rsplit("\t", maxsplit=2)
         if word == ".":
             new_sent = True
-        else:
-            if new_sent:
+        elif new_sent:
+            words.append([])
+            tags.append([])
+            new_sent = False
 
-                # if len(words) > 0:
-                #     index2word = {v: k for k, v in word2index.items()}
-                #     sentence = " ".join([index2word[idx] for idx in words[-1]])
-                #     print(sentence)
-
-                words.append([0])
-                tags.append([0])
-                new_sent = False
-
-            if word == "" and tag != "":
-                word = "."
-
-            if not word in word2index:
-                word2index[word] = len(word2index)
-            words[-1].append(word2index[word])
-            if not tag in tag2index:
-                tag2index[tag] = len(tag2index)
-                index2tag.append(tag)
-            tags[-1].append(tag2index[tag])
-
+        if not word in word2index:
+            word2index[word] = len(word2index)
+        words[-1].append(word2index[word])
+        if not tag in tag2index:
+            tag2index[tag] = len(tag2index)
+            index2tag.append(tag)
+        tags[-1].append(tag2index[tag])
 
 
 def read_train_datasets(dataset_paths):
+
     word2index = {}
+    word2index["<unk>"] = 0
+    word2index["<pad>"] = 1
+    # word2index["<s>"] = 2
+
     tag2index = {}
-    word2index["<s>"] = 0
-    word2index["<unk>"] = 1
-    word2index["<pad>"] = 2
-    tag2index["<s>"] = 0
+    tag2index["<unk>"] = 0
     tag2index["<pad>"] = 1
-    index2tag = ["<s>", "<pad>"]
+    # tag2index["<s>"] = 2
+    index2tag = ["<unk", "<pad>"]  # "<s>"
 
     # Create lists of lists to read corpus into
     # [[word11, word12, ...], [word21, word22, ...]]
@@ -78,26 +70,21 @@ def read_dev_dataset(dataset_path, words, tags, word2index, tag2index):
         if line.strip() == "":
             continue
 
-        if line.strip() == "," or line.strip() == "":
+        word, morphs, tag = line.rsplit("\t", maxsplit=2)
+        if word == ".":
             new_sent = True
-        else:
-            if new_sent:
-                words.append([0])
-                tags.append([0])
-                new_sent = False
+        elif new_sent:
+            words.append([])
+            tags.append([])
+            new_sent = False
 
-            word, morphs, tag = line.rsplit("\t", maxsplit=2)
-            if word == "" and tag != "":
-                word = "."
+        if not word in word2index:
+            word = "<unk>"
+        words[-1].append(word2index[word])
 
-            if not word in word2index:  # Changed is to in
-                word = '<unk>'
-            words[-1].append(word2index[word])
-            if not tag in tag2index:
-                # print 'unknown gold tag', tag
-                tags[-1].append(0)
-            else:
-                tags[-1].append(tag2index[tag])
+        if not tag in tag2index:
+            tag = "<unk>"
+        tags[-1].append(tag2index[tag])
 
 
 def read_dev_datasets(dataset_paths):
@@ -144,10 +131,32 @@ class LSTMTagger(nn.Module):
                 torch.zeros(self.num_layers, batch_size, self.hidden_size))
 
 
+
+def compute_scores(gold_tags, pred_tags, tag2index):
+    total = 0
+    correct = 0
+
+    for i in range(len(gold_tags)):
+        for j in range(len(gold_tags[i])):
+            # this_word = index2word[sentence[i]]
+            # if all(ch in string.punctuation for ch in this_word) or this_word == "<s>":
+            #     num_test_tokens -= 1
+            #     continue
+            if gold_tags[i][j] == tag2index["<pad>"]:
+                break
+
+            total += 1
+            if pred_tags[i][j] == gold_tags[i][j]:
+                correct += 1
+
+    acc = (correct + 0.0) / total
+    return acc
+
+
 if __name__ == '__main__':
 
-    train_paths = ["../data/train/xh.gold.train", "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
-    dev_paths = ["../data/dev/xh.gold.dev", "../data/dev/zu.gold.dev", "../data/dev/nr.gold.dev", "../data/dev/ss.gold.dev"]
+    train_paths = ["../data/train/xh.gold.train"] #, "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
+    dev_paths = ["../data/dev/xh.gold.dev"] #, "../data/dev/zu.gold.dev", "../data/dev/nr.gold.dev", "../data/dev/ss.gold.dev"]
 
     train_words, train_tags, word2index, tag2index, index2tag = read_train_datasets(train_paths)
     dev_words, dev_tags = read_dev_datasets(dev_paths)
@@ -187,7 +196,7 @@ if __name__ == '__main__':
     for epoch in range(1, num_epochs + 1):
         total_loss = 0
 
-        bar = tqdm(total=len(list(range(0, len(train_words), batch_size))))
+        bar = tqdm(total=len(list(range(0, len(train_words), batch_size))), position=0, leave=True)
         for batch_num, batch_pos in enumerate(range(0, len(train_words), batch_size)):
 
             batch_words = train_words[batch_pos: batch_pos + batch_size]
@@ -218,33 +227,43 @@ if __name__ == '__main__':
                 print("| epoch {:3d} | loss {:5.2f} | ".format(epoch, cur_loss))
                 total_loss = 0
 
-        # val_loss = evaluate(model, char_vocab, valid_corpus, device, batch_size, bptt_len, reg_coef)
-        # print("| epoch {:3d} | valid loss {:5.2f} | valid R {:5.2f} | valid nll {:5.2f} | valid ppl {:5.2f} | "
-        #       "valid bpc {:5.2f} | ".format(epoch, val_loss, val_R, val_nll, math.exp(val_nll), val_nll / math.log(2)))
-        # # generate_text(model, vocab, "Tears will gather ", gen_len=100)
-        # scheduler.step(val_loss)
-        # if val_loss < best_loss:
-        #     best_loss = val_loss
-        #     best_epoch = epoch
+        ##############################################################################
+        # Evaluate on development set
+        model.eval()
+        val_loss = 0.0
+        gold_tags = []
+        pred_tags = []
+
+        with torch.no_grad():
+            for batch_num, batch_pos in enumerate(range(0, len(dev_words), batch_size)):
+                batch_words = dev_words[batch_pos: batch_pos + batch_size]
+                batch_words = [torch.tensor(batch_words[i]) for i in range(len(batch_words))]
+                batch_words = pad_sequence(batch_words, padding_value=word_pad_id)
+
+                batch_tags = dev_tags[batch_pos: batch_pos + batch_size]
+                batch_tags = [torch.tensor(batch_tags[i]) for i in range(len(batch_tags))]
+                batch_tags = pad_sequence(batch_tags, padding_value=tag_pad_id)
+                gold_tags.extend(batch_tags.T.tolist())
+
+                init_state_h, init_state_c = model.init_states(batch_words.shape[-1])
+                logits = model(batch_words, init_state_h, init_state_c)
+                batch_pred_tags = torch.max(logits, dim=-1).indices.T
+                pred_tags.extend(batch_pred_tags.tolist())
+
+                loss = criterion(input=logits.view(-1, num_tags), target=batch_tags.view(-1))
+                val_loss += loss.item()
+
+        acc = compute_scores(gold_tags, pred_tags, tag2index)
+        print("| epoch {:3d} | valid loss {:5.2f} | acc {:5.2f} | ".format(epoch, val_loss, acc))
+        # generate_text(model, vocab, "Tears will gather ", gen_len=100)
+        scheduler.step(val_loss)
+        if val_loss < best_loss:
+            best_loss = val_loss
+            best_epoch = epoch
 
     end = time.time()
     print("Training completed in %fs." % (end - start))
     #print("| epoch {:3d} | valid loss {:5.2f} | ".format(best_epoch, best_loss))
 
 
-    # Evaluation
-    # num_test_tokens = 0
-    # num_correct_tokens = 0
-    # index2word = {v: k for k, v in word2index.items()}
-    #
-    # for j, sent in enumerate(dev_words):
-    #     for i in range(len(dev_tags[j])):
-    #         this_word = index2word[sent[i]]
-    #         if all(ch in string.punctuation for ch in this_word) or this_word == "<s>":
-    #             num_test_tokens -= 1
-    #             continue
-    #         if best_path[i] == dev_tags[j][i]:
-    #             num_correct_tokens += 1
-    #
-    # acc = (num_correct_tokens + 0.0) / num_test_tokens
-    # print(acc)
+
