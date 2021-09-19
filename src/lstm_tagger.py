@@ -10,6 +10,9 @@ from tqdm import tqdm
 import itertools
 import json
 import collections
+import random
+from sklearn.metrics import f1_score
+import numpy as np
 
 
 def read_train_dataset(dataset_path, words, tags, word2index, tag2index, index2tag):
@@ -118,7 +121,10 @@ class LSTMTagger(nn.Module):
 
         self.drop = nn.Dropout(dropout)  # dropout used for embedding and final layer
         self.embedding = nn.Embedding(word_vocab_size, input_size, padding_idx=input_pad_id)
-        self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, dropout=dropout)
+        if num_layers == 1:
+            self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
+        else:
+            self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, dropout=dropout)
         self.fc = nn.Linear(hidden_size, tag_vocab_size)
 
     def forward(self, input_ids, init_state_h, init_state_c):
@@ -152,11 +158,16 @@ def compute_scores(gold_tags, pred_tags, tag2index):
             if pred_tags[i][j] == gold_tags[i][j]:
                 correct += 1
 
+    gold_tags_flat = [item for ls in gold_tags for item in ls]
+    pred_tags_flat = [item for ls in pred_tags for item in ls]
+
     acc = (correct + 0.0) / total
-    return acc
+    f1 = f1_score(y_true=gold_tags_flat, y_pred=pred_tags_flat, average="macro")
+
+    return acc, f1
 
 
-def train_model(train_words, train_tags, word2index, tag2index, index2tag, dev_words, dev_tags, params):
+def train_model(train_words, train_tags, word2index, tag2index, index2tag, dev_words, dev_tags, params, output_file, track=False):
     input_size = params["input_size"]
     hidden_size = params["hidden_size"]
     num_layers = params["num_layers"]
@@ -185,17 +196,20 @@ def train_model(train_words, train_tags, word2index, tag2index, index2tag, dev_w
 
     # Train model
     start = time.time()
-    best_loss = float("inf")
+    best_f1 = 0.0
+    best_acc = 0.0
     best_epoch = None
 
     for epoch in range(1, num_epochs + 1):
         total_loss = 0
 
-        bar = tqdm(total=len(list(range(0, len(train_words), batch_size))), position=0, leave=True)
+        if track:
+            bar = tqdm(total=len(list(range(0, len(train_words), batch_size))), position=0, leave=True)
         for batch_num, batch_pos in enumerate(range(0, len(train_words), batch_size)):
 
             batch_words = train_words[batch_pos: batch_pos + batch_size]
-            bar.update(1)
+            if track:
+                bar.update(1)
             batch_words = [torch.tensor(batch_words[i]) for i in range(len(batch_words))]
             batch_words = pad_sequence(batch_words, padding_value=word_pad_id)
 
@@ -219,7 +233,10 @@ def train_model(train_words, train_tags, word2index, tag2index, index2tag, dev_w
 
             if batch_num % log_interval == 0 and batch_num > 0:  # and batch_num > 0:
                 cur_loss = total_loss / log_interval
-                print("| epoch {:3d} | loss {:5.2f} | ".format(epoch, cur_loss))
+                if track:
+                    print("| epoch {:3d} | loss {:5.2f} |".format(epoch, cur_loss))
+                else:
+                    output_file.write("| epoch {:3d} | loss {:5.2f} | \n".format(epoch, cur_loss))
                 total_loss = 0
 
         ##############################################################################
@@ -248,32 +265,40 @@ def train_model(train_words, train_tags, word2index, tag2index, index2tag, dev_w
                 loss = criterion(input=logits.view(-1, num_tags), target=batch_tags.view(-1))
                 val_loss += loss.item()
 
-        acc = compute_scores(gold_tags, pred_tags, tag2index)
-        print("| epoch {:3d} | valid loss {:5.2f} | acc {:5.2f} | ".format(epoch, val_loss, acc))
+        acc, f1 = compute_scores(gold_tags, pred_tags, tag2index)
+        if track:
+            print("| epoch {:3d} | valid loss {:5.2f} | acc {:5.4f} | f1 {:5.4f} |".format(epoch, val_loss, acc, f1))
+        else:
+            output_file.write("| epoch {:3d} | valid loss {:5.2f} | acc {:5.4f} | f1 {:5.4f} |\n".format(epoch, val_loss, acc, f1))
         # generate_text(model, vocab, "Tears will gather ", gen_len=100)
         scheduler.step(val_loss)
-        if val_loss < best_loss:
-            best_loss = val_loss
+        if f1 > best_f1:
+            best_f1 = f1
+            best_acc = acc
             best_epoch = epoch
 
     end = time.time()
-    print("Training completed in %fs." % (end - start))
+    output_file.write("Training completed in %fs.\n" % (end - start))
 
-    return best_loss, acc, best_epoch
-    # print("| epoch {:3d} | valid loss {:5.2f} | ".format(best_epoch, best_loss))
+    if track:
+        print("BEST RESULT:")
+        print("| epoch {:3d} | acc {:5.4f} | f1 {:5.4f}".format(best_epoch, best_acc, best_f1))
+
+    return best_acc, best_f1, best_epoch
+
 
 
 def grid_search():
     grid = {}
-    grid["input_size"] = [128, 256]
-    grid["hidden_size"] = [256, 512]
-    grid["num_layers"] = [1]
-    grid["dropout"] = [0.2]
-    grid["num_epochs"] = [1]
+    grid["input_size"] = [128, 256, 512]
+    grid["hidden_size"] = [128, 256, 512]
+    grid["num_layers"] = [1, 2, 3]
+    grid["dropout"] = [0.0, 0.2]
+    grid["num_epochs"] = [20]
     grid["weight_decay"] = [1e-5]
     grid["lr_patience"] = [2]
-    grid["lr"] = [0.01]
-    grid["batch_size"] = [64]
+    grid["lr"] = [0.01, 0.001, 0.0001]
+    grid["batch_size"] = [32, 64]
     grid["clip"] = [1.0]
     grid["log_interval"] = [10]
 
@@ -281,24 +306,181 @@ def grid_search():
     grid = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
     grid_search = {}
-    for params in grid:
-        loss, acc, epoch = train_one_model(params)
-        grid_search[json.dumps(params)] = {"loss": loss, "acc": acc, "epoch": epoch}
+    for i, params in enumerate(grid):
+        print("%d/%d" % (i+1, len(grid)))
+        start = time.time()
 
-    sorted_grid = collections.OrderedDict(sorted(grid_search.items(), key=lambda t:t[1]["acc"], reverse=True))
+        acc, f1, epoch = cv(words, tags, params, folds=10)
+        grid_search[json.dumps(params)] = {"f1": f1, "acc": acc, "epoch": epoch}
+
+        end = time.time()
+        print("CV completed in %fs.\n" % (end - start))
+
+    sorted_grid = collections.OrderedDict(sorted(grid_search.items(), key=lambda t:t[1]["f1"], reverse=True))
 
     for key in sorted_grid:
-        print(sorted_grid[key])
+        print(sorted_grid[key], "   ", key)
 
 
-def train_one_model(params):
-    return train_model(train_words, train_tags, word2index, tag2index, index2tag, dev_words, dev_tags, params)
+
+def read_raw_datasets(dataset_paths):
+    # Create lists of lists to read test corpus into
+    # [[word11, word12, ...], [word21, word22, ...]]
+    # [[tag11, tag12, ...], [tag21, tag22, ...]]
+    words = []
+    tags = []
+
+    for dataset_path in dataset_paths:
+        lang_words = []
+        lang_tags = []
+
+        dataset = open(dataset_path, "r").read().split("\n")
+        new_sent = True
+        for line in dataset[1:]:  # discard first line, which is just column headings
+
+            if line.strip() == "":
+                continue
+
+            word, morphs, tag = line.rsplit("\t", maxsplit=2)
+            if word == ".":
+                new_sent = True
+            elif new_sent:
+                lang_words.append([])
+                lang_tags.append([])
+                new_sent = False
+
+            lang_words[-1].append(word)
+            lang_tags[-1].append(tag)
+        words.append(lang_words)
+        tags.append(lang_tags)
+
+    return words, tags
+
+
+def train2ids(train_words, train_tags):
+    word2index = {}
+    word2index["<unk>"] = 0
+    word2index["<pad>"] = 1
+    # word2index["<s>"] = 2
+
+    tag2index = {}
+    tag2index["<unk>"] = 0
+    tag2index["<pad>"] = 1
+    # tag2index["<s>"] = 2
+    index2tag = ["<unk", "<pad>"]  # "<s>"
+
+    # Create lists of lists to read corpus into
+    # [[word11, word12, ...], [word21, word22, ...]]
+    # [[tag11, tag12, ...], [tag21, tag22, ...]]
+    words = []
+    tags = []
+
+    # Go throught training corpus line by line, reading words and tags into lists and creating vocabs
+    for i, sentence in enumerate(train_words):  # discard first line, which is just column headings
+
+        words.append([])
+        tags.append([])
+
+        for j, word in enumerate(sentence):
+            if not word in word2index:
+                word2index[word] = len(word2index)
+            words[-1].append(word2index[word])
+
+            tag = train_tags[i][j]
+            if not tag in tag2index:
+                tag2index[tag] = len(tag2index)
+                index2tag.append(tag)
+            tags[-1].append(tag2index[tag])
+
+    return words, tags, word2index, tag2index, index2tag
+
+
+def dev2ids(dev_words, dev_tags, word2index, tag2index):
+    # Create lists of lists to read corpus into
+    # [[word11, word12, ...], [word21, word22, ...]]
+    # [[tag11, tag12, ...], [tag21, tag22, ...]]
+    words = []
+    tags = []
+
+    # Go throught training corpus line by line, reading words and tags into lists and creating vocabs
+    for i, sentence in enumerate(dev_words):  # discard first line, which is just column headings
+
+        words.append([])
+        tags.append([])
+
+        for j, word in enumerate(sentence):
+            if not word in word2index:
+                word = "<unk>"
+            words[-1].append(word2index[word])
+
+            tag = dev_tags[i][j]
+            if not tag in tag2index:
+                tag = "<unk>"
+            tags[-1].append(tag2index[tag])
+
+    return words, tags
+
+
+def cv(words, tags, params, folds=10, track=False):
+
+    output_path = "log.txt"
+    output_file = open(output_path, "w")
+    output_file.close()
+    output_file = open(output_path, "a")
+
+    fold_sizes = []
+    words_shuffled = []
+    tags_shuffled = []
+
+    for i in range(len(words)):
+        lang_pairs = list(zip(words[i], tags[i]))
+        random.shuffle(lang_pairs)
+
+        lang_words_shuffled, lang_tags_shuffled = zip(*lang_pairs)
+        words_shuffled.append(lang_words_shuffled)
+        tags_shuffled.append(lang_tags_shuffled)
+
+        full_size = len(words[i])
+        test_size = int(full_size * (1 / folds))
+        train_size = full_size - test_size
+        fold_sizes.append((train_size, test_size))
+
+    accs = []
+    f1s = []
+    for k in range(folds):
+        output_file.write("\n\n------------------------------------------------------------\n")
+        output_file.write("Fold %d\n" % (k+1))
+        output_file.write("------------------------------------------------------------\n")
+
+        train_words = []
+        dev_words = []
+        train_tags = []
+        dev_tags = []
+        for i in range(len(words)):
+            dev_indices = list(range(k * fold_sizes[i][1], k * fold_sizes[i][1] + fold_sizes[i][1]))
+            train_indices = [index for index in range(0, full_size) if index not in dev_indices]
+
+            dev_words.extend([words_shuffled[i][idx] for idx in dev_indices])
+            train_words.extend([words_shuffled[i][idx] for idx in train_indices])
+
+            dev_tags.extend([tags_shuffled[i][idx] for idx in dev_indices])
+            train_tags.extend([tags_shuffled[i][idx] for idx in train_indices])
+
+        train_word_ids, train_tag_ids, word2index, tag2index, index2tag = train2ids(train_words, train_tags)
+        dev_word_ids, dev_tag_ids = dev2ids(dev_words, dev_tags, word2index, tag2index)
+
+        acc, f1, epoch = train_model(train_word_ids, train_tag_ids, word2index, tag2index, index2tag, dev_word_ids, dev_tag_ids, params, output_file, track)
+        accs.append(acc)
+        f1s.append(f1)
+
+    output_file.close()
+    return acc, f1
 
 
 if __name__ == '__main__':
     params = {}
-    params["input_size"] = 128
-    params["hidden_size"] = 256
+    params["input_size"] = 512
+    params["hidden_size"] = 512
     params["num_layers"] = 1
     params["dropout"] = 0.2
     params["num_epochs"] = 50
@@ -310,12 +492,12 @@ if __name__ == '__main__':
     params["log_interval"] = 10
     #train_one_model(params)
 
-    train_paths = ["../data/train/xh.gold.train", "../data/train/zu.gold.train", "../data/train/nr.gold.train",
-                   "../data/train/ss.gold.train"]
-    dev_paths = ["../data/dev/xh.gold.dev", "../data/dev/zu.gold.dev", "../data/dev/nr.gold.dev",
-                 "../data/dev/ss.gold.dev"]
+    train_paths = ["../data/train/xh.gold.train", "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
+    # dev_paths = ["../data/dev/xh.gold.dev", "../data/dev/zu.gold.dev", "../data/dev/nr.gold.dev", "../data/dev/ss.gold.dev"]
 
-    train_words, train_tags, word2index, tag2index, index2tag = read_train_datasets(train_paths)
-    dev_words, dev_tags = read_dev_datasets(dev_paths, word2index, tag2index)
+    #train_words, train_tags, word2index, tag2index, index2tag = read_train_datasets(train_paths)
+    #dev_words, dev_tags = read_dev_datasets(dev_paths, word2index, tag2index)
 
+    words, tags = read_raw_datasets(dataset_paths=train_paths)
+    #cv(words, tags, params, folds=10, track=False)
     grid_search()
