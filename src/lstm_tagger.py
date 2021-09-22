@@ -111,40 +111,52 @@ class LSTMTagger(nn.Module):
     """
     Vanilla LSTM model for POS tagging
     """
-    def __init__(self, word_vocab_size, tag_vocab_size, input_size, hidden_size, num_layers, dropout, input_pad_id):
+    def __init__(self, word_vocab_size, tag_vocab_size, input_size, hidden_size, num_layers, dropout, input_pad_id, bidirectional):
         super(LSTMTagger, self).__init__()
         self.word_vocab_size = word_vocab_size
         self.tag_vocab_size = tag_vocab_size
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
+        self.bidirectional = bidirectional
 
         self.drop = nn.Dropout(dropout)  # dropout used for embedding and final layer
         self.embedding = nn.Embedding(word_vocab_size, input_size, padding_idx=input_pad_id)
         if num_layers == 1:
-            self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
+            self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, bidirectional=bidirectional)
         else:
-            self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, dropout=dropout)
-        self.fc = nn.Linear(hidden_size, tag_vocab_size)
+            self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, bidirectional=bidirectional, dropout=dropout)
 
-    def forward(self, input_ids, init_state_h, init_state_c):
+        self.fc = nn.Linear(hidden_size * 2 if bidirectional else hidden_size, tag_vocab_size)
+
+    def forward(self, input_ids):
         embeddings = self.embedding(input_ids)
         embeddings = self.drop(embeddings)
-        hidden_states, final_states = self.lstm(embeddings, (init_state_h, init_state_c))
+        hidden_states, final_states = self.lstm(embeddings)
         output = self.drop(hidden_states)
         logits = self.fc(output)
         return logits
 
     def init_states(self, batch_size):
-        return (torch.zeros(self.num_layers, batch_size, self.hidden_size),
-                torch.zeros(self.num_layers, batch_size, self.hidden_size))
+        if self.bidirectional:
+            init_states = (torch.zeros(self.num_layers, batch_size, self.hidden_size),
+                           torch.zeros(self.num_layers, batch_size, self.hidden_size),
+                           torch.zeros(self.num_layers, batch_size, self.hidden_size),
+                           torch.zeros(self.num_layers, batch_size, self.hidden_size))
+        else:
+            init_states = (torch.zeros(self.num_layers, batch_size, self.hidden_size),
+                           torch.zeros(self.num_layers, batch_size, self.hidden_size))
+
+        return init_states
+
 
 
 
 def compute_scores(gold_tags, pred_tags, tag2index):
     total = 0
     correct = 0
-
+    gold_tags_flat = []
+    pred_tags_flat = []
     for i in range(len(gold_tags)):
         for j in range(len(gold_tags[i])):
             # this_word = index2word[sentence[i]]
@@ -158,8 +170,17 @@ def compute_scores(gold_tags, pred_tags, tag2index):
             if pred_tags[i][j] == gold_tags[i][j]:
                 correct += 1
 
-    gold_tags_flat = [item for ls in gold_tags for item in ls]
-    pred_tags_flat = [item for ls in pred_tags for item in ls]
+
+        seq_len = gold_tags[i].index(tag2index["<pad>"]) if tag2index["<pad>"] in gold_tags[i] else len(gold_tags[i])
+
+        if len(gold_tags[i][0: seq_len]) != len(pred_tags[i][0: seq_len]):
+            print(len(gold_tags[i][0: seq_len]), len(pred_tags[i][0: seq_len]))
+            print(gold_tags[i])
+            print(pred_tags[i])
+            print("--------------------------------------------------------------")
+
+        gold_tags_flat.extend(gold_tags[i][0: seq_len])
+        pred_tags_flat.extend(pred_tags[i][0: seq_len])
 
     acc = (correct + 0.0) / total
     f1 = f1_score(y_true=gold_tags_flat, y_pred=pred_tags_flat, average="macro")
@@ -188,7 +209,7 @@ def train_model(train_words, train_tags, word2index, tag2index, index2tag, dev_w
     num_tags = len(tag2index)
 
     # Set up model and training
-    model = LSTMTagger(word_vocab_size, tag_vocab_size, input_size, hidden_size, num_layers, dropout, word_pad_id)
+    model = LSTMTagger(word_vocab_size, tag_vocab_size, input_size, hidden_size, num_layers, dropout, word_pad_id, bidirectional=True)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)  # Adam with proper weight decay
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=lr_patience, verbose=True,
                                                      factor=0.5)  # Half the learning rate
@@ -220,8 +241,7 @@ def train_model(train_words, train_tags, word2index, tag2index, index2tag, dev_w
             model.train()
             model.zero_grad()
 
-            init_state_h, init_state_c = model.init_states(batch_words.shape[-1])
-            logits = model(batch_words, init_state_h, init_state_c)
+            logits = model(batch_words)
 
             loss = criterion(input=logits.view(-1, num_tags), target=batch_tags.view(-1))
             # nll = - torch.sum(log_alpha) / torch.numel(input_ids)
@@ -237,6 +257,7 @@ def train_model(train_words, train_tags, word2index, tag2index, index2tag, dev_w
                     print("| epoch {:3d} | loss {:5.2f} |".format(epoch, cur_loss))
                 else:
                     output_file.write("| epoch {:3d} | loss {:5.2f} | \n".format(epoch, cur_loss))
+                    output_file.flush()
                 total_loss = 0
 
         ##############################################################################
@@ -257,8 +278,7 @@ def train_model(train_words, train_tags, word2index, tag2index, index2tag, dev_w
                 batch_tags = pad_sequence(batch_tags, padding_value=tag_pad_id)
                 gold_tags.extend(batch_tags.T.tolist())
 
-                init_state_h, init_state_c = model.init_states(batch_words.shape[-1])
-                logits = model(batch_words, init_state_h, init_state_c)
+                logits = model(batch_words)
                 batch_pred_tags = torch.max(logits, dim=-1).indices.T
                 pred_tags.extend(batch_pred_tags.tolist())
 
@@ -279,6 +299,7 @@ def train_model(train_words, train_tags, word2index, tag2index, index2tag, dev_w
 
     end = time.time()
     output_file.write("Training completed in %fs.\n" % (end - start))
+    output_file.flush()
 
     if track:
         print("BEST RESULT:")
@@ -290,20 +311,25 @@ def train_model(train_words, train_tags, word2index, tag2index, index2tag, dev_w
 
 def grid_search():
     grid = {}
-    grid["input_size"] = [128, 256, 512]
-    grid["hidden_size"] = [128, 256, 512]
-    grid["num_layers"] = [1, 2, 3]
-    grid["dropout"] = [0.0, 0.2]
-    grid["num_epochs"] = [20]
+    grid["input_size"] = [512]
+    grid["hidden_size"] = [512, 1024]
+    grid["num_layers"] = [1, 2]
+    grid["dropout"] = [0.2]
+    grid["num_epochs"] = [30]
     grid["weight_decay"] = [1e-5]
-    grid["lr_patience"] = [2]
-    grid["lr"] = [0.01, 0.001, 0.0001]
-    grid["batch_size"] = [32, 64]
+    grid["lr_patience"] = [3]
+    grid["lr"] = [0.01, 0.005, 0.001]
+    grid["batch_size"] = [64]
     grid["clip"] = [1.0]
     grid["log_interval"] = [10]
 
+
     keys, values = zip(*grid.items())
     grid = [dict(zip(keys, v)) for v in itertools.product(*values)]
+
+    output_path = "log.txt"
+    output_file = open(output_path, "w")
+    output_file.close()
 
     grid_search = {}
     for i, params in enumerate(grid):
@@ -424,8 +450,6 @@ def dev2ids(dev_words, dev_tags, word2index, tag2index):
 def cv(words, tags, params, folds=10, track=False):
 
     output_path = "log.txt"
-    output_file = open(output_path, "w")
-    output_file.close()
     output_file = open(output_path, "a")
 
     fold_sizes = []
@@ -447,7 +471,14 @@ def cv(words, tags, params, folds=10, track=False):
 
     accs = []
     f1s = []
+    epochs = []
+    output_file.write("\n\n------------------------------------------------------------\n")
+    output_file.write("Model: %s\n" % (params))
+    output_file.write("------------------------------------------------------------\n")
     for k in range(folds):
+
+        if k + 1 > 1:
+            break
         output_file.write("\n\n------------------------------------------------------------\n")
         output_file.write("Fold %d\n" % (k+1))
         output_file.write("------------------------------------------------------------\n")
@@ -469,24 +500,29 @@ def cv(words, tags, params, folds=10, track=False):
         train_word_ids, train_tag_ids, word2index, tag2index, index2tag = train2ids(train_words, train_tags)
         dev_word_ids, dev_tag_ids = dev2ids(dev_words, dev_tags, word2index, tag2index)
 
-        acc, f1, epoch = train_model(train_word_ids, train_tag_ids, word2index, tag2index, index2tag, dev_word_ids, dev_tag_ids, params, output_file, track)
+        acc, f1, epoch = train_model(train_word_ids, train_tag_ids, word2index, tag2index, index2tag, dev_word_ids, dev_tag_ids, params, output_file, track=True)
         accs.append(acc)
         f1s.append(f1)
+        epochs.append(epoch)
+
+    ave_acc = np.mean(acc)
+    ave_f1 = np.mean(f1)
+    ave_epoch = np.mean(epochs)
 
     output_file.close()
-    return acc, f1
+    return ave_acc, ave_f1, ave_epoch
 
 
 if __name__ == '__main__':
     params = {}
     params["input_size"] = 512
     params["hidden_size"] = 512
-    params["num_layers"] = 1
+    params["num_layers"] = 2
     params["dropout"] = 0.2
     params["num_epochs"] = 50
     params["weight_decay"] = 1e-5
     params["lr_patience"] = 2
-    params["lr"] = 0.01
+    params["lr"] = 0.005
     params["batch_size"] = 64
     params["clip"] = 1.0
     params["log_interval"] = 10
@@ -498,6 +534,12 @@ if __name__ == '__main__':
     #train_words, train_tags, word2index, tag2index, index2tag = read_train_datasets(train_paths)
     #dev_words, dev_tags = read_dev_datasets(dev_paths, word2index, tag2index)
 
+    output_path = "log.txt"
+    output_file = open(output_path, "w")
+    output_file.close()
+
     words, tags = read_raw_datasets(dataset_paths=train_paths)
-    #cv(words, tags, params, folds=10, track=False)
-    grid_search()
+    cv(words, tags, params, folds=10, track=False)
+    #grid_search()
+
+
