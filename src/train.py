@@ -355,6 +355,7 @@ def train_model(train_words, train_morphs, train_tags, word2index, morph2index, 
     log_interval = params["log_interval"]
 
     index2word = {v: k for k, v in word2index.items()}
+    index2morph = {v: k for k, v in morph2index.items()}
     word_vocab_size = len(word2index)
     morph_vocab_size = len(morph2index)
     tag_vocab_size = len(tag2index)
@@ -403,10 +404,19 @@ def train_model(train_words, train_morphs, train_tags, word2index, morph2index, 
 
             batch_len = batch_words.shape[0]
             batch_morphs = train_morphs[batch_pos: batch_pos + batch_size]
+
             batch_morphs = [ls + [[morph_pad_id]]*(batch_len - len(ls)) for ls in batch_morphs]
             batch_morphs = [item for ls in batch_morphs for item in ls]
             batch_morphs = [torch.tensor(batch_morphs[i]) for i in range(len(batch_morphs))]
             batch_morphs = pad_sequence(batch_morphs, padding_value=word_pad_id)
+
+            # for i in range(batch_morphs.shape[1]):
+            #     print("----------------------")
+            #     print(index2word[batch_words[i][0].item()])
+            #     print([index2morph[batch_morphs[idx][i].item()] for idx in range(len(batch_morphs))])
+            #     if i == 3:
+            #         break
+
 
             batch_tags = train_tags[batch_pos: batch_pos + batch_size]
             batch_tags = [torch.tensor(batch_tags[i]) for i in range(len(batch_tags))]
@@ -514,7 +524,7 @@ if __name__ == '__main__':
     params["log_interval"] = 10
     #train_one_model(params)
 
-    train_paths = ["../data/train/xh.gold.train"] #, "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
+    train_paths = ["../data/train/xh.gold.train", "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
     # dev_paths = ["../data/dev/xh.gold.dev", "../data/dev/zu.gold.dev", "../data/dev/nr.gold.dev", "../data/dev/ss.gold.dev"]
 
     #train_words, train_tags, word2index, tag2index, index2tag = read_train_datasets(train_paths)

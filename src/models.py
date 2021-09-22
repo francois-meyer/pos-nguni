@@ -275,24 +275,33 @@ class MorphLSTMTagger(nn.Module):
         self.word_embedding = nn.Embedding(word_vocab_size, input_size, padding_idx=word_pad_id)
         if num_layers == 1:
             self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, bidirectional=bidirectional)
-            self.morph_lstm = nn.LSTM(input_size=input_size, hidden_size=input_size, num_layers=1, bidirectional=bidirectional)
+            self.morph_lstm = nn.LSTM(input_size=input_size, hidden_size=input_size, num_layers=1, bidirectional=False)
+            self.morph_fc = nn.Linear(input_size * 2 if bidirectional else input_size, input_size)
         else:
             self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, bidirectional=bidirectional, dropout=dropout)
-            self.morph_lstm = nn.LSTM(input_size=input_size, hidden_size=input_size, num_layers=1,  bidirectional=bidirectional)
+            self.morph_lstm = nn.LSTM(input_size=input_size, hidden_size=input_size, num_layers=1,  bidirectional=False)
+            self.morph_fc = nn.Linear(input_size * 2 if bidirectional else input_size, input_size)
 
         self.fc = nn.Linear(hidden_size * 2 if bidirectional else hidden_size, tag_vocab_size)
 
     def encode_words(self, word_ids, morph_ids):
         morph_embeddings = self.morph_embedding(morph_ids)
-        word_embeddings = torch.sum(morph_embeddings, dim=0).view(word_ids.shape[0], word_ids.shape[1], self.input_size)
-        word_embeddings = self.word_embedding(word_ids)
+        word_embeddings = torch.sum(morph_embeddings, dim=0).view(word_ids.shape[1], word_ids.shape[0], self.input_size)
+
+        #_, (final_hidden_states, _) = self.morph_lstm(morph_embeddings)
+        #word_embeddings = final_hidden_states.squeeze(0).view(word_ids.shape[1], word_ids.shape[0], self.input_size)
+        word_embeddings = torch.swapaxes(word_embeddings, 0, 1) + self.word_embedding(word_ids)
+
+
+
+        #word_embeddings = self.word_embedding(word_ids)
         return word_embeddings
 
 
     def forward(self, word_ids, morph_ids):
         embeddings = self.encode_words(word_ids, morph_ids)
 
-        embeddings = self.drop(embeddings)
+        #embeddings = self.drop(embeddings)
         hidden_states, final_states = self.lstm(embeddings)
         output = self.drop(hidden_states)
         logits = self.fc(output)
