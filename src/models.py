@@ -212,6 +212,60 @@ class BiLSTM_CRF_Tagger(nn.Module):
         scores, tag_seq = self.crf(features, masks)
         return scores, tag_seq
 
+class Subword_BiLSTM_CRF_Tagger(nn.Module):
+    def __init__(self, word_vocab_size, subword_vocab_size, tagset_size, embedding_dim, hidden_dim, num_rnn_layers=1, rnn="lstm"):
+        super(Subword_BiLSTM_CRF_Tagger, self).__init__()
+        self.embedding_dim = embedding_dim
+        self.hidden_dim = hidden_dim
+        self.word_vocab_size = word_vocab_size
+        self.subword_vocab_size = subword_vocab_size
+        self.tagset_size = tagset_size
+
+        self.subword_embedding = nn.Embedding(subword_vocab_size, embedding_dim)
+        self.word_embedding = nn.Embedding(word_vocab_size, embedding_dim)
+        RNN = nn.LSTM if rnn == "lstm" else nn.GRU
+        self.rnn = RNN(embedding_dim, hidden_dim // 2, num_layers=num_rnn_layers,
+                       bidirectional=True, batch_first=True)
+        self.crf = CRF(hidden_dim, self.tagset_size)
+
+
+        self.subword_lstm = nn.LSTM(input_size=embedding_dim, hidden_size=embedding_dim, num_layers=1, bidirectional=True)
+        self.subword_fc = nn.Linear(embedding_dim * 2, embedding_dim)
+
+    def __build_features(self, word_ids, subword_ids):
+        masks = word_ids.gt(0)
+        #embeds = self.word_embedding(sentences.long())
+
+        subword_embeddings = self.subword_embedding(subword_ids)
+
+        # Simple addition
+        word_embeddings = torch.sum(subword_embeddings, dim=1).view(word_ids.shape[0], word_ids.shape[1], self.embedding_dim)
+        embeds = self.word_embedding(word_ids)
+        word_embeddings = word_embeddings + embeds
+
+        seq_length = masks.sum(1)
+        sorted_seq_length, perm_idx = seq_length.sort(descending=True)
+        embeds = word_embeddings[perm_idx, :]
+
+        pack_sequence = pack_padded_sequence(embeds, lengths=sorted_seq_length, batch_first=True)
+        packed_output, _ = self.rnn(pack_sequence)
+        lstm_out, _ = pad_packed_sequence(packed_output, batch_first=True)
+        _, unperm_idx = perm_idx.sort()
+        lstm_out = lstm_out[unperm_idx, :]
+
+        return lstm_out, masks
+
+    def loss(self, xs, subword_ids, tags):
+        features, masks = self.__build_features(xs, subword_ids)
+        loss = self.crf.loss(features, tags, masks=masks)
+        return loss
+
+    def forward(self, xs, subword_ids):
+        # Get the emission scores from the BiLSTM
+        features, masks = self.__build_features(xs, subword_ids)
+        scores, tag_seq = self.crf(features, masks)
+        return scores, tag_seq
+
 
 class LSTMTagger(nn.Module):
     """
@@ -275,26 +329,29 @@ class MorphLSTMTagger(nn.Module):
         self.word_embedding = nn.Embedding(word_vocab_size, input_size, padding_idx=word_pad_id)
         if num_layers == 1:
             self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, bidirectional=bidirectional)
-            self.morph_lstm = nn.LSTM(input_size=input_size, hidden_size=input_size, num_layers=1, bidirectional=False)
+            self.morph_lstm = nn.LSTM(input_size=input_size, hidden_size=input_size, num_layers=1, bidirectional=True)
             self.morph_fc = nn.Linear(input_size * 2 if bidirectional else input_size, input_size)
         else:
             self.lstm = nn.LSTM(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, bidirectional=bidirectional, dropout=dropout)
-            self.morph_lstm = nn.LSTM(input_size=input_size, hidden_size=input_size, num_layers=1,  bidirectional=False)
+            self.morph_lstm = nn.LSTM(input_size=input_size, hidden_size=input_size, num_layers=1,  bidirectional=True)
             self.morph_fc = nn.Linear(input_size * 2 if bidirectional else input_size, input_size)
 
         self.fc = nn.Linear(hidden_size * 2 if bidirectional else hidden_size, tag_vocab_size)
 
     def encode_words(self, word_ids, morph_ids):
         morph_embeddings = self.morph_embedding(morph_ids)
-        word_embeddings = torch.sum(morph_embeddings, dim=0).view(word_ids.shape[1], word_ids.shape[0], self.input_size)
 
-        #_, (final_hidden_states, _) = self.morph_lstm(morph_embeddings)
-        #word_embeddings = final_hidden_states.squeeze(0).view(word_ids.shape[1], word_ids.shape[0], self.input_size)
+        # Simple addition
+        word_embeddings = torch.sum(morph_embeddings, dim=0).view(word_ids.shape[1], word_ids.shape[0], self.input_size)
         word_embeddings = torch.swapaxes(word_embeddings, 0, 1) + self.word_embedding(word_ids)
 
+        # LSTM
+        # _, (final_hidden_states, _) = self.morph_lstm(morph_embeddings)
+        # final_hidden_states = torch.swapaxes(final_hidden_states, 0, 1).reshape(-1, self.input_size*2)
+        # word_embeddings = final_hidden_states.squeeze(0).view(word_ids.shape[1], word_ids.shape[0], self.input_size*2)
+        # word_embeddings = self.morph_fc(word_embeddings)
+        #word_embeddings = torch.swapaxes(word_embeddings, 0, 1)
 
-
-        #word_embeddings = self.word_embedding(word_ids)
         return word_embeddings
 
 
