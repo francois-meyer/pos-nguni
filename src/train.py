@@ -379,7 +379,7 @@ def cv(words, subwords, tags, params, folds=10, track=False):
     output_file.write("------------------------------------------------------------\n")
     for k in range(folds):
 
-        if k + 1 > 2:
+        if k + 1 > 3:
             break
         output_file.write("\n\n------------------------------------------------------------\n")
         output_file.write("Fold %d\n" % (k+1))
@@ -685,7 +685,7 @@ if __name__ == '__main__':
     params["hidden_size"] = 512
     params["num_layers"] = 1
     params["dropout"] = 0.2
-    params["num_epochs"] = 30
+    params["num_epochs"] = 15
     params["weight_decay"] = 1e-5
     params["lr_patience"] = 3
     params["lr"] = 0.01
@@ -694,9 +694,9 @@ if __name__ == '__main__':
     params["log_interval"] = 10
     #train_one_model(params)  ##87
 
-    train_paths = ["../data/train/xh.gold.train"]#, "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
+    train_paths = ["../data/train/ss.gold.train"]#, "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
     # dev_paths = ["../data/dev/xh.gold.dev", "../data/dev/zu.gold.dev", "../data/dev/nr.gold.dev", "../data/dev/ss.gold.dev"]
-    test_paths = ["../data/test/xh.test"] #, "../data/test/zu.test", "../data/test/nr.test", "../data/test/ss.test"]
+    test_paths = ["../data/test/ss.test"] #, "../data/test/zu.test", "../data/test/nr.test", "../data/test/ss.test"]
 
     #train_words, train_tags, word2index, tag2index, index2tag = read_train_datasets(train_paths)
     #dev_words, dev_tags = read_dev_datasets(dev_paths, word2index, tag2index)
@@ -717,23 +717,23 @@ if __name__ == '__main__':
 
 
 
-    # print("NGRAMS=3")
-    # MAX_N = 2
-    # predict_path = "xh_prediction.tsv"
-    # test_words, test_subwords = read_raw_test_dataset(test_paths[0], tokenize=tokenize_char_ngrams)
-    # train_words, train_subwords, train_tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
-    # train_words = train_words[0]
-    # train_subwords = train_subwords[0]
-    # train_tags = train_tags[0]
-    #
-    # test_model(train_words, train_subwords, train_tags, test_words, test_subwords, predict_path)
+    print("NGRAMS=3")
+    MAX_N = 2
+    predict_path = "ss_prediction.tsv"
+    test_words, test_subwords = read_raw_test_dataset(test_paths[0], tokenize=tokenize_char_ngrams)
+    train_words, train_subwords, train_tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
+    train_words = train_words[0]
+    train_subwords = train_subwords[0]
+    train_tags = train_tags[0]
+
+    test_model(train_words, train_subwords, train_tags, test_words, test_subwords, predict_path)
     #
     #
 
-    MAX_N = 3
-    train_words, train_subwords, train_tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
-    #grid_search(skip=2)
-    cv(train_words, train_subwords, train_tags, params, folds=10, track=False)
+    # MAX_N = 2
+    # train_words, train_subwords, train_tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
+    # #grid_search(skip=2)
+    # cv(train_words, train_subwords, train_tags, params, folds=10, track=False)
 
 
 
