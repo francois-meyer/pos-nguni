@@ -15,6 +15,7 @@ from sklearn.metrics import f1_score
 import numpy as np
 import nltk
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+import random
 
 from models import MorphLSTMTagger, Subword_BiLSTM_CRF_Tagger
 
@@ -271,7 +272,10 @@ def train2ids(train_words, train_subwords, train_tags):
             for subword in train_subwords[i][j]:
                 if not subword in subword2index:
                     subword2index[subword] = len(subword2index)
+
                 subwords[i][j].append(subword2index[subword])
+
+
 
             tag = train_tags[i][j]
             if not tag in tag2index:
@@ -486,18 +490,46 @@ def train_model(train_words, train_subwords, train_tags, word2index, subword2ind
     for epoch in range(1, num_epochs + 1):
         total_loss = 0
 
+        epoch_train_words = []
+        epoch_train_subwords = []
+        epoch_train_tags = []
+
+        for i, sentence in enumerate(train_words):
+            epoch_train_words.append([])
+            epoch_train_tags.append([])
+            for j, word in enumerate(sentence):
+                if random.uniform(0, 1) > 0.1:
+                    epoch_train_words[-1].append(word)
+                else:
+                    epoch_train_words[-1].append(word2index["<unk>"])
+                epoch_train_tags[-1].append(train_tags[i][j])
+
+        for sentence in train_subwords:
+            epoch_train_subwords.append([])
+            for word in sentence:
+                epoch_train_subwords[-1].append([])
+                for subword in word:
+                    if random.uniform(0, 1) > 0.05: #83
+                        epoch_train_subwords[-1][-1].append(subword)
+                    else:
+                        epoch_train_subwords[-1][-1].append(subword2index["<unk>"])
+
+        triplet = list(zip(epoch_train_words, epoch_train_subwords, epoch_train_tags))
+        epoch_train_words, epoch_train_subwords, epoch_train_tags = zip(*triplet)
+
+
         if track:
             bar = tqdm(total=len(list(range(0, len(train_words), batch_size))), position=0, leave=True)
         for batch_num, batch_pos in enumerate(range(0, len(train_words), batch_size)):
             if track:
                 bar.update(1)
 
-            batch_words = train_words[batch_pos: batch_pos + batch_size]
+            batch_words = epoch_train_words[batch_pos: batch_pos + batch_size]
             batch_words = [torch.tensor(batch_words[i]) for i in range(len(batch_words))]
             batch_words = pad_sequence(batch_words, padding_value=word_pad_id)
 
             batch_len = batch_words.shape[0]
-            batch_subwords = train_subwords[batch_pos: batch_pos + batch_size]
+            batch_subwords = epoch_train_subwords[batch_pos: batch_pos + batch_size]
 
             batch_subwords = [ls + [[subword_pad_id]]*(batch_len - len(ls)) for ls in batch_subwords]
             batch_subwords = [item for ls in batch_subwords for item in ls]
@@ -568,11 +600,16 @@ def train_model(train_words, train_subwords, train_tags, word2index, subword2ind
         print("| epoch {:3d} | valid loss {:5.2f} | acc {:5.4f} | f1 {:5.4f} |".format(epoch, val_loss, acc, f1))
 
         # generate_text(model, vocab, "Tears will gather ", gen_len=100)
-        scheduler.step(f1)
+        #scheduler.step(f1)
         if f1 > best_f1:
             best_f1 = f1
             best_acc = acc
             best_epoch = epoch
+
+        if epoch + 1 == 6 or epoch + 1 == 9 or epoch + 1 == 12 or epoch + 1 == 15:
+            for g in optimizer.param_groups:
+                g['lr'] = g['lr'] * 0.5
+
 
     end = time.time()
     print("Training completed in %fs.\n" % (end - start))
@@ -640,17 +677,15 @@ def test_model(train_words, train_subwords, train_tags, test_words, test_subword
             predict_file.write("%s\t%s\n" % (test_words[i][j], index2tag[tag]))
 
 
-
-
 if __name__ == '__main__':
     params = {}
     params["crf"] = True
     params["comp"] = "sum"
-    params["input_size"] = 128
+    params["input_size"] = 512
     params["hidden_size"] = 512
     params["num_layers"] = 1
     params["dropout"] = 0.2
-    params["num_epochs"] = 2
+    params["num_epochs"] = 30
     params["weight_decay"] = 1e-5
     params["lr_patience"] = 3
     params["lr"] = 0.01
@@ -659,7 +694,7 @@ if __name__ == '__main__':
     params["log_interval"] = 10
     #train_one_model(params)  ##87
 
-    train_paths = ["../data/train/zu.gold.train"]#, "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
+    train_paths = ["../data/train/xh.gold.train"]#, "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
     # dev_paths = ["../data/dev/xh.gold.dev", "../data/dev/zu.gold.dev", "../data/dev/nr.gold.dev", "../data/dev/ss.gold.dev"]
     test_paths = ["../data/test/xh.test"] #, "../data/test/zu.test", "../data/test/nr.test", "../data/test/ss.test"]
 
@@ -683,22 +718,22 @@ if __name__ == '__main__':
 
 
     # print("NGRAMS=3")
-    MAX_N = 2
-    predict_path = "xh_prediction.tsv"
-    test_words, test_subwords = read_raw_test_dataset(test_paths[0], tokenize=tokenize_char_ngrams)
-    train_words, train_subwords, train_tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
-    train_words = train_words[0]
-    train_subwords = train_subwords[0]
-    train_tags = train_tags[0]
-
-    test_model(train_words, train_subwords, train_tags, test_words, test_subwords, predict_path)
-    #
-    #
-
     # MAX_N = 2
+    # predict_path = "xh_prediction.tsv"
+    # test_words, test_subwords = read_raw_test_dataset(test_paths[0], tokenize=tokenize_char_ngrams)
     # train_words, train_subwords, train_tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
-    # #grid_search(skip=2)
-    # cv(train_words, train_subwords, train_tags, params, folds=10, track=False)
+    # train_words = train_words[0]
+    # train_subwords = train_subwords[0]
+    # train_tags = train_tags[0]
+    #
+    # test_model(train_words, train_subwords, train_tags, test_words, test_subwords, predict_path)
+    #
+    #
+
+    MAX_N = 3
+    train_words, train_subwords, train_tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
+    #grid_search(skip=2)
+    cv(train_words, train_subwords, train_tags, params, folds=10, track=False)
 
 
 
