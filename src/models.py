@@ -193,15 +193,15 @@ class Subword_BiLSTM_CRF_Tagger(nn.Module):
 
         self.drop = nn.Dropout(dropout)
         self.subword_lstm = nn.LSTM(input_size=embedding_dim, hidden_size=embedding_dim, num_layers=1, bidirectional=True)
-        self.subword_fc = nn.Linear(embedding_dim * 2, embedding_dim)
+        self.subword_fc = nn.Linear(embedding_dim * 2, embedding_dim)  #85!!!
 
     def __build_features(self, word_ids, subword_ids):
 
         subword_embeddings = self.subword_embedding(subword_ids)
-        # position_ids = torch.tensor([list(range(1, len(subword_ids) + 1))] * subword_ids.shape[1]).T
-        # position_ids = torch.where(subword_ids != 0, position_ids, 0)
-        # position_embeddings = self.subword_position(position_ids)
-        # subword_embeddings = subword_embeddings + position_embeddings
+        position_ids = torch.tensor([list(range(1, len(subword_ids) + 1))] * subword_ids.shape[1]).T
+        position_ids = torch.where(subword_ids != 0, position_ids, 0)
+        position_embeddings = self.subword_position(position_ids)
+        subword_embeddings = subword_embeddings + position_embeddings
 
         if self.comp == "sum":
             # Simple addition

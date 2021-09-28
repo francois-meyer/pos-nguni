@@ -128,6 +128,8 @@ def tokenize_char_ngrams(word):
         word = "<" + word + ">"
     elif MAX_N == 3:
         word = "<<" + word + ">>"
+    elif MAX_N == 4:
+        word = "<<<" + word + ">>>"
     segs = []
     chars = list(word)
     segs_n = nltk.ngrams(chars, n=MAX_N)
@@ -177,6 +179,35 @@ def read_raw_datasets(dataset_paths, tokenize):
         tags.append(lang_tags)
 
     return words, subwords, tags
+
+
+def read_raw_test_dataset(dataset_path, tokenize):
+    # Create lists of lists to read test corpus into
+    # [[word11, word12, ...], [word21, word22, ...]]
+    # [[tag11, tag12, ...], [tag21, tag22, ...]]
+    words = []
+    subwords = []
+
+    dataset = open(dataset_path, "r").read().split("\n")
+    new_sent = True
+    for line in dataset[1:]:  # discard first line, which is just column headings
+
+        if line.strip() == "":
+            continue
+
+        word = line.strip()
+        if word == ".":
+            new_sent = True
+        elif new_sent:
+            words.append([])
+            subwords.append([])
+            new_sent = False
+
+        words[-1].append(word)
+        subwords[-1].append(tokenize(word))
+
+    return words, subwords
+
 
 
 def train2ids(train_words, train_subwords, train_tags):
@@ -274,7 +305,7 @@ def dev2ids(dev_words, dev_subwords, dev_tags, word2index, subword2index, tag2in
             subwords[i].append([])
             for subword in dev_subwords[i][j]:
                 if not subword in subword2index:
-                    subword2index[subword] = len(subword2index)
+                    subword = "<unk>"
                 subwords[i][j].append(subword2index[subword])
 
             tag = dev_tags[i][j]
@@ -283,6 +314,33 @@ def dev2ids(dev_words, dev_subwords, dev_tags, word2index, subword2index, tag2in
             tags[-1].append(tag2index[tag])
 
     return words, subwords, tags
+
+
+def test2ids(test_words, test_subwords, word2index, subword2index):
+    # Create lists of lists to read corpus into
+    # [[word11, word12, ...], [word21, word22, ...]]
+    # [[tag11, tag12, ...], [tag21, tag22, ...]]
+    words = []
+    subwords = []
+
+    # Go throught training corpus line by line, reading words and tags into lists and creating vocabs
+    for i, sentence in enumerate(test_words):  # discard first line, which is just column headings
+
+        words.append([])
+        subwords.append([])
+
+        for j, word in enumerate(sentence):
+            if not word in word2index:
+                word = "<unk>"
+            words[-1].append(word2index[word])
+
+            subwords[i].append([])
+            for subword in test_subwords[i][j]:
+                if not subword in subword2index:
+                    subword = "<unk>"
+                subwords[i][j].append(subword2index[subword])
+
+    return words, subwords
 
 
 def cv(words, subwords, tags, params, folds=10, track=False):
@@ -378,7 +436,7 @@ def cv(words, subwords, tags, params, folds=10, track=False):
     return ave_acc, ave_f1, ave_epoch
 
 
-def train_model(train_words, train_subwords, train_tags, word2index, subword2index, tag2index, index2tag, dev_words, dev_subwords, dev_tags, params, output_file, track=False):
+def train_model(train_words, train_subwords, train_tags, word2index, subword2index, tag2index, index2tag, dev_words, dev_subwords, dev_tags, params, output_file, track=False, mode="tune"):
     crf = params["crf"]
     comp = params["comp"]
     input_size = params["input_size"]
@@ -466,11 +524,7 @@ def train_model(train_words, train_subwords, train_tags, word2index, subword2ind
 
             if batch_num % log_interval == 0 and batch_num > 0:  # and batch_num > 0:
                 cur_loss = total_loss / log_interval
-                if track:
-                    print("| epoch {:3d} | loss {:5.2f} |".format(epoch, cur_loss))
-                else:
-                    output_file.write("| epoch {:3d} | loss {:5.2f} | \n".format(epoch, cur_loss))
-                    output_file.flush()
+                print("| epoch {:3d} | loss {:5.2f} |".format(epoch, cur_loss))
                 total_loss = 0
 
         ##############################################################################
@@ -511,10 +565,8 @@ def train_model(train_words, train_subwords, train_tags, word2index, subword2ind
 
 
         acc, f1 = compute_scores(gold_tags, pred_tags, tag2index)
-        if track:
-            print("| epoch {:3d} | valid loss {:5.2f} | acc {:5.4f} | f1 {:5.4f} |".format(epoch, val_loss, acc, f1))
-        else:
-            output_file.write("| epoch {:3d} | valid loss {:5.2f} | acc {:5.4f} | f1 {:5.4f} |\n".format(epoch, val_loss, acc, f1))
+        print("| epoch {:3d} | valid loss {:5.2f} | acc {:5.4f} | f1 {:5.4f} |".format(epoch, val_loss, acc, f1))
+
         # generate_text(model, vocab, "Tears will gather ", gen_len=100)
         scheduler.step(f1)
         if f1 > best_f1:
@@ -523,14 +575,72 @@ def train_model(train_words, train_subwords, train_tags, word2index, subword2ind
             best_epoch = epoch
 
     end = time.time()
-    output_file.write("Training completed in %fs.\n" % (end - start))
-    output_file.flush()
+    print("Training completed in %fs.\n" % (end - start))
+
 
     if track:
         print("BEST RESULT:")
         print("| epoch {:3d} | acc {:5.4f} | f1 {:5.4f}".format(best_epoch, best_acc, best_f1))
 
+    if mode == "test":
+        return model
+
     return best_acc, best_f1, best_epoch
+
+
+def test_model(train_words, train_subwords, train_tags, test_words, test_subwords, predict_path):
+    crf = params["crf"]
+    batch_size = params["batch_size"]
+
+    predict_file = open(predict_path, "w")
+    predict_file.close()
+    predict_file = open(predict_path, "a")
+
+    accs = []
+    f1s = []
+    epochs = []
+
+    train_word_ids, train_subword_ids, train_tag_ids, word2index, subword2index, tag2index, index2tag = train2ids(train_words, train_subwords, train_tags)
+    test_word_ids, test_subword_ids = test2ids(test_words, test_subwords, word2index, subword2index)
+    word_pad_id = word2index["<pad>"]
+    subword_pad_id = subword2index["<pad>"]
+
+
+    model = train_model(train_word_ids, train_subword_ids, train_tag_ids, word2index, subword2index, tag2index,
+                        index2tag, train_word_ids, train_subword_ids, train_tag_ids, params, output_file, track=True, mode="test")
+
+    predict_file.write("TOKEN\tUPOS\n")
+
+    pred_tags = []
+
+    with torch.no_grad():
+        for batch_num, batch_pos in enumerate(range(0, len(test_word_ids), batch_size)):
+            batch_words = test_word_ids[batch_pos: batch_pos + batch_size]
+            batch_words = [torch.tensor(batch_words[i]) for i in range(len(batch_words))]
+            batch_words = pad_sequence(batch_words, padding_value=word_pad_id)
+
+            batch_len = batch_words.shape[0]
+            batch_subwords = test_subword_ids[batch_pos: batch_pos + batch_size]
+            batch_subwords = [ls + [[subword_pad_id]] * (batch_len - len(ls)) for ls in batch_subwords]
+            batch_subwords = [item for ls in batch_subwords for item in ls]
+            batch_subwords = [torch.tensor(batch_subwords[i]) for i in range(len(batch_subwords))]
+            batch_subwords = pad_sequence(batch_subwords, padding_value=subword_pad_id)
+
+            if crf:
+                logits, tag_seq = model(batch_words.T, batch_subwords)
+                pred_tags.extend(tag_seq)
+            else:
+                logits = model(batch_words, batch_subwords)
+                batch_pred_tags = torch.max(logits, dim=-1).indices.T
+                pred_tags.extend(batch_pred_tags.tolist())
+
+
+    for i, sentence in enumerate(pred_tags):
+        for j, tag in enumerate(sentence):
+            predict_file.write("%s\t%s\n" % (test_words[i][j], index2tag[tag]))
+
+
+
 
 if __name__ == '__main__':
     params = {}
@@ -540,17 +650,18 @@ if __name__ == '__main__':
     params["hidden_size"] = 512
     params["num_layers"] = 1
     params["dropout"] = 0.2
-    params["num_epochs"] = 50
+    params["num_epochs"] = 2
     params["weight_decay"] = 1e-5
     params["lr_patience"] = 3
     params["lr"] = 0.01
     params["batch_size"] = 64
     params["clip"] = 1.0
     params["log_interval"] = 10
-    #train_one_model(params)
+    #train_one_model(params)  ##87
 
-    train_paths = ["../data/train/nr.gold.train"]#, "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
+    train_paths = ["../data/train/zu.gold.train"]#, "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
     # dev_paths = ["../data/dev/xh.gold.dev", "../data/dev/zu.gold.dev", "../data/dev/nr.gold.dev", "../data/dev/ss.gold.dev"]
+    test_paths = ["../data/test/xh.test"] #, "../data/test/zu.test", "../data/test/nr.test", "../data/test/ss.test"]
 
     #train_words, train_tags, word2index, tag2index, index2tag = read_train_datasets(train_paths)
     #dev_words, dev_tags = read_dev_datasets(dev_paths, word2index, tag2index)
@@ -559,16 +670,37 @@ if __name__ == '__main__':
     output_file = open(output_path, "w")
     output_file.close()
 
+    # MAX_N = 3
+    # train_words, train_subwords, train_tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
+    # test_path =
+    # test_model(train_words, train_subwords, train_tags, params, test_path, predict_path)
+
     # print("CHARACTERS")
     # words, subwords, tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_chars)
     # #cv(words, subwords, tags, params, folds=10, track=False)
     # grid_search()
 
-    print("NGRAMS=2")
-    MAX_N = 3
-    words, subwords, tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
-    #grid_search(skip=2)
-    cv(words, subwords, tags, params, folds=10, track=False)
+
+
+    # print("NGRAMS=3")
+    MAX_N = 2
+    predict_path = "xh_prediction.tsv"
+    test_words, test_subwords = read_raw_test_dataset(test_paths[0], tokenize=tokenize_char_ngrams)
+    train_words, train_subwords, train_tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
+    train_words = train_words[0]
+    train_subwords = train_subwords[0]
+    train_tags = train_tags[0]
+
+    test_model(train_words, train_subwords, train_tags, test_words, test_subwords, predict_path)
+    #
+    #
+
+    # MAX_N = 2
+    # train_words, train_subwords, train_tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
+    # #grid_search(skip=2)
+    # cv(train_words, train_subwords, train_tags, params, folds=10, track=False)
+
+
 
     # print("NGRAMS=3")
     # MAX_N = 3
