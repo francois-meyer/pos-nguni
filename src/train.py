@@ -16,7 +16,7 @@ import numpy as np
 import nltk
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-from models import BiLSTM_CRF_Tagger, LSTMTagger, MorphLSTMTagger, Subword_BiLSTM_CRF_Tagger
+from models import MorphLSTMTagger, Subword_BiLSTM_CRF_Tagger
 
 START_TAG = "<START>"
 STOP_TAG = "<STOP>"
@@ -63,37 +63,53 @@ def compute_scores(gold_tags, pred_tags, tag2index):
     return acc, f1
 
 
-def grid_search():
+def grid_search(skip=0):
     grid = {}
-    grid["crf"] = [False]
-    grid["subword"] = [True]
+    grid["crf"] = [True, False]
+    grid["comp"] = ["sum"]
     grid["input_size"] = [512]
     grid["hidden_size"] = [512]
     grid["num_layers"] = [1, 2]
     grid["dropout"] = [0.2]
-    grid["num_epochs"] = [30]
+    grid["num_epochs"] = [20]
     grid["weight_decay"] = [1e-5]
     grid["lr_patience"] = [3]
-    grid["lr"] = [0.01, 0.005, 0.001]
-    grid["batch_size"] = [64]
+    grid["lr"] = [0.01]
+    grid["batch_size"] = [32]
     grid["clip"] = [1.0]
     grid["log_interval"] = [10]
 
+    # grid["crf"] = [True, False]
+    # grid["comp"] = ["lstm", "sum"]
+    # grid["input_size"] = [512]
+    # grid["hidden_size"] = [1024, 512]
+    # grid["num_layers"] = [1, 2]
+    # grid["dropout"] = [0.2, 0.5]
+    # grid["num_epochs"] = [30]
+    # grid["weight_decay"] = [1e-5]
+    # grid["lr_patience"] = [3]
+    # grid["lr"] = [0.001]
+    # grid["batch_size"] = [64]
+    # grid["clip"] = [1.0]
+    # grid["log_interval"] = [10]
 
     keys, values = zip(*grid.items())
     grid = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
     output_path = "log.txt"
-    output_file = open(output_path, "w")
-    output_file.close()
+    output_file = open(output_path, "a")
+    #output_file.close()
 
     grid_search = {}
     for i, params in enumerate(grid):
+        if i + 1 <= skip:
+            continue
         print("%d/%d" % (i+1, len(grid)))
         start = time.time()
 
         acc, f1, epoch = cv(words, subwords, tags, params, folds=10)
         grid_search[json.dumps(params)] = {"f1": f1, "acc": acc, "epoch": epoch}
+        print(json.dumps(grid_search[json.dumps(params)]) + " , " +  json.dumps(params))
 
         end = time.time()
         print("CV completed in %fs.\n" % (end - start))
@@ -105,15 +121,19 @@ def grid_search():
 
 
 def tokenize_char_ngrams(word):
-    # Split into all possible segments
+    # Split into all possible segment
+    if not word.isalpha():
+        return list(word)
+    if MAX_N == 2:
+        word = "<" + word + ">"
+    elif MAX_N == 3:
+        word = "<<" + word + ">>"
     segs = []
-    max_n = 2
-    for n in range(max_n, max_n+1):
-        chars = list(word)
-        segs_n = nltk.ngrams(chars, n=n)
-        segs_n = ["".join(seg) for seg in segs_n]
-        #segs_n = [seg for seg in segs_n if seg.isalpha() and len(seg) == n]
-        segs.extend(segs_n)
+    chars = list(word)
+    segs_n = nltk.ngrams(chars, n=MAX_N)
+    segs_n = ["".join(seg) for seg in segs_n]
+    #segs_n = [seg for seg in segs_n if seg.isalpha() and len(seg) == n]
+    segs.extend(segs_n)
     return segs
 
 def tokenize_chars(word):
@@ -354,13 +374,13 @@ def cv(words, subwords, tags, params, folds=10, track=False):
     ave_f1 = np.mean(f1)
     ave_epoch = np.mean(epochs)
 
-    output_file.close()
+    #output_file.close()
     return ave_acc, ave_f1, ave_epoch
 
 
 def train_model(train_words, train_subwords, train_tags, word2index, subword2index, tag2index, index2tag, dev_words, dev_subwords, dev_tags, params, output_file, track=False):
     crf = params["crf"]
-    subword = params["subword"]
+    comp = params["comp"]
     input_size = params["input_size"]
     hidden_size = params["hidden_size"]
     num_layers = params["num_layers"]
@@ -384,22 +404,15 @@ def train_model(train_words, train_subwords, train_tags, word2index, subword2ind
     num_tags = len(tag2index)
 
     # Set up model and training
-    if crf and not subword:
-        model = BiLSTM_CRF_Tagger(vocab_size=word_vocab_size, tagset_size=num_tags, embedding_dim=input_size,
-                                  hidden_dim=hidden_size, num_rnn_layers=num_layers)
-
-    elif crf and subword:
+    if crf:
         model = Subword_BiLSTM_CRF_Tagger(word_vocab_size=word_vocab_size, subword_vocab_size=subword_vocab_size, tagset_size=num_tags, embedding_dim=input_size,
-                                  hidden_dim=hidden_size, num_rnn_layers=num_layers)
-
-    elif subword:
-        model = MorphLSTMTagger(word_vocab_size, subword_vocab_size, tag_vocab_size, input_size, hidden_size, num_layers,
-                                dropout, word_pad_id, subword_pad_id, bidirectional=True)
-        criterion = nn.CrossEntropyLoss(ignore_index=tag_pad_id)
+                                  hidden_dim=hidden_size, dropout=dropout, num_rnn_layers=num_layers, comp=comp)
 
     else:
-        model = LSTMTagger(word_vocab_size, tag_vocab_size, input_size, hidden_size, num_layers, dropout, word_pad_id, bidirectional=True)
+        model = MorphLSTMTagger(word_vocab_size, subword_vocab_size, tag_vocab_size, input_size, hidden_size, num_layers,
+                                dropout, word_pad_id, subword_pad_id, bidirectional=True, comp=comp)
         criterion = nn.CrossEntropyLoss(ignore_index=tag_pad_id)
+
 
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)  # Adam with proper weight decay
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", patience=lr_patience, verbose=True,
@@ -441,7 +454,7 @@ def train_model(train_words, train_subwords, train_tags, word2index, subword2ind
             model.zero_grad()
 
             if crf:
-                loss = model.loss(batch_words.T, batch_subwords.T, batch_tags.T)
+                loss = model.loss(batch_words.T, batch_subwords, batch_tags.T)
             else:
                 logits = model(batch_words, batch_subwords)
                 loss = criterion(input=logits.view(-1, num_tags), target=batch_tags.view(-1))
@@ -486,7 +499,7 @@ def train_model(train_words, train_subwords, train_tags, word2index, subword2ind
                 gold_tags.extend(batch_tags.T.tolist())
 
                 if crf:
-                    logits, tag_seq = model(batch_words.T, batch_subwords.T)
+                    logits, tag_seq = model(batch_words.T, batch_subwords)
                     pred_tags.extend(tag_seq)
                 else:
                     logits = model(batch_words, batch_subwords)
@@ -522,7 +535,7 @@ def train_model(train_words, train_subwords, train_tags, word2index, subword2ind
 if __name__ == '__main__':
     params = {}
     params["crf"] = True
-    params["subword"] = True
+    params["comp"] = "sum"
     params["input_size"] = 128
     params["hidden_size"] = 512
     params["num_layers"] = 1
@@ -536,7 +549,7 @@ if __name__ == '__main__':
     params["log_interval"] = 10
     #train_one_model(params)
 
-    train_paths = ["../data/train/xh.gold.train"]#, "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
+    train_paths = ["../data/train/nr.gold.train"]#, "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
     # dev_paths = ["../data/dev/xh.gold.dev", "../data/dev/zu.gold.dev", "../data/dev/nr.gold.dev", "../data/dev/ss.gold.dev"]
 
     #train_words, train_tags, word2index, tag2index, index2tag = read_train_datasets(train_paths)
@@ -546,7 +559,46 @@ if __name__ == '__main__':
     output_file = open(output_path, "w")
     output_file.close()
 
-    words, subwords, tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_chars)
+    # print("CHARACTERS")
+    # words, subwords, tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_chars)
+    # #cv(words, subwords, tags, params, folds=10, track=False)
+    # grid_search()
+
+    print("NGRAMS=2")
+    MAX_N = 3
+    words, subwords, tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
+    #grid_search(skip=2)
     cv(words, subwords, tags, params, folds=10, track=False)
-    #grid_search()
+
+    # print("NGRAMS=3")
+    # MAX_N = 3
+    # words, subwords, tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
+    # grid_search()
+    #
+    # print("NGRAMS=4")
+    # MAX_N = 4
+    # words, subwords, tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
+    # grid_search()
+
+
+    # print("BEGIN SISWATI")
+    #
+    # train_paths = ["../data/train/ss.gold.train"]
+    # print("CHARACTERS")
+    # words, subwords, tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_chars)
+    # # cv(words, subwords, tags, params, folds=10, track=False)
+    # grid_search()
+    #
+    # print("NGRAMS=2")
+    # MAX_N = 2
+    # words, subwords, tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
+    # grid_search()
+    #
+    # print("NGRAMS=3")
+    # MAX_N = 3
+    # words, subwords, tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
+    # grid_search()
+
+
+
 
