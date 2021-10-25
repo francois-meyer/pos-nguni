@@ -72,7 +72,7 @@ def grid_search(skip=0):
     grid["hidden_size"] = [512]
     grid["num_layers"] = [1, 2]
     grid["dropout"] = [0.2]
-    grid["num_epochs"] = [20]
+    grid["num_epochs"] = [1]
     grid["weight_decay"] = [1e-5]
     grid["lr_patience"] = [3]
     grid["lr"] = [0.01]
@@ -143,7 +143,7 @@ def tokenize_chars(word):
     return list(word)
 
 
-def read_raw_datasets(dataset_paths, tokenize):
+def read_raw_train_dataset(dataset_path, tokenize):
     # Create lists of lists to read test corpus into
     # [[word11, word12, ...], [word21, word22, ...]]
     # [[tag11, tag12, ...], [tag21, tag22, ...]]
@@ -151,33 +151,25 @@ def read_raw_datasets(dataset_paths, tokenize):
     tags = []
     subwords = []
 
-    for dataset_path in dataset_paths:
-        lang_words = []
-        lang_subwords = []
-        lang_tags = []
+    dataset = open(dataset_path, "r").read().split("\n")
+    new_sent = True
+    for line in dataset[1:]:  # discard first line, which is just column headings
 
-        dataset = open(dataset_path, "r").read().split("\n")
-        new_sent = True
-        for line in dataset[1:]:  # discard first line, which is just column headings
+        if line.strip() == "":
+            continue
 
-            if line.strip() == "":
-                continue
+        word, morph, tag = line.rsplit("\t", maxsplit=2)
+        if word == ".":
+            new_sent = True
+        elif new_sent:
+            words.append([])
+            subwords.append([])
+            tags.append([])
+            new_sent = False
 
-            word, morph, tag = line.rsplit("\t", maxsplit=2)
-            if word == ".":
-                new_sent = True
-            elif new_sent:
-                lang_words.append([])
-                lang_subwords.append([])
-                lang_tags.append([])
-                new_sent = False
-
-            lang_words[-1].append(word)
-            lang_subwords[-1].append(tokenize(word))
-            lang_tags[-1].append(tag)
-        words.append(lang_words)
-        subwords.append(lang_subwords)
-        tags.append(lang_tags)
+        words[-1].append(word)
+        subwords[-1].append(tokenize(word))
+        tags[-1].append(tag)
 
     return words, subwords, tags
 
@@ -196,7 +188,7 @@ def read_raw_test_dataset(dataset_path, tokenize):
         if line.strip() == "":
             continue
 
-        word = line.strip()
+        word, morphs, lemma, xpos, tag = line.rsplit("\t", maxsplit=4)
         if word == ".":
             new_sent = True
         elif new_sent:
@@ -488,6 +480,8 @@ def train_model(train_words, train_subwords, train_tags, word2index, subword2ind
     best_epoch = None
 
     for epoch in range(1, num_epochs + 1):
+
+        print(epoch)
         total_loss = 0
 
         epoch_train_words = []
@@ -556,7 +550,8 @@ def train_model(train_words, train_subwords, train_tags, word2index, subword2ind
 
             if batch_num % log_interval == 0 and batch_num > 0:  # and batch_num > 0:
                 cur_loss = total_loss / log_interval
-                print("| epoch {:3d} | loss {:5.2f} |".format(epoch, cur_loss))
+                # TODO: uncomment
+                # print("| epoch {:3d} | loss {:5.2f} |".format(epoch, cur_loss))
                 total_loss = 0
 
         ##############################################################################
@@ -597,7 +592,11 @@ def train_model(train_words, train_subwords, train_tags, word2index, subword2ind
 
 
         acc, f1 = compute_scores(gold_tags, pred_tags, tag2index)
-        print("| epoch {:3d} | valid loss {:5.2f} | acc {:5.4f} | f1 {:5.4f} |".format(epoch, val_loss, acc, f1))
+        # TODO: uncomment
+        #print("| epoch {:3d} | valid loss {:5.2f} | acc {:5.4f} | f1 {:5.4f} |".format(epoch, val_loss, acc, f1))
+
+
+
 
         # generate_text(model, vocab, "Tears will gather ", gen_len=100)
         #scheduler.step(f1)
@@ -612,7 +611,7 @@ def train_model(train_words, train_subwords, train_tags, word2index, subword2ind
 
 
     end = time.time()
-    print("Training completed in %fs.\n" % (end - start))
+    #print("Training completed in %fs.\n" % (end - start))
 
 
     if track:
@@ -620,7 +619,7 @@ def train_model(train_words, train_subwords, train_tags, word2index, subword2ind
         print("| epoch {:3d} | acc {:5.4f} | f1 {:5.4f}".format(best_epoch, best_acc, best_f1))
 
     if mode == "test":
-        return model
+        return model, "{:.2f}".format(acc * 100), "{:.2f}".format(f1 * 100)
 
     return best_acc, best_f1, best_epoch
 
@@ -643,38 +642,40 @@ def test_model(train_words, train_subwords, train_tags, test_words, test_subword
     subword_pad_id = subword2index["<pad>"]
 
 
-    model = train_model(train_word_ids, train_subword_ids, train_tag_ids, word2index, subword2index, tag2index,
-                        index2tag, train_word_ids, train_subword_ids, train_tag_ids, params, output_file, track=True, mode="test")
+    model, acc, f1 = train_model(train_word_ids, train_subword_ids, train_tag_ids, word2index, subword2index, tag2index,
+                        index2tag, train_word_ids, train_subword_ids, train_tag_ids, params, output_file, track=False, mode="test")
 
-    predict_file.write("TOKEN\tUPOS\n")
+    return acc, f1
 
-    pred_tags = []
-
-    with torch.no_grad():
-        for batch_num, batch_pos in enumerate(range(0, len(test_word_ids), batch_size)):
-            batch_words = test_word_ids[batch_pos: batch_pos + batch_size]
-            batch_words = [torch.tensor(batch_words[i]) for i in range(len(batch_words))]
-            batch_words = pad_sequence(batch_words, padding_value=word_pad_id)
-
-            batch_len = batch_words.shape[0]
-            batch_subwords = test_subword_ids[batch_pos: batch_pos + batch_size]
-            batch_subwords = [ls + [[subword_pad_id]] * (batch_len - len(ls)) for ls in batch_subwords]
-            batch_subwords = [item for ls in batch_subwords for item in ls]
-            batch_subwords = [torch.tensor(batch_subwords[i]) for i in range(len(batch_subwords))]
-            batch_subwords = pad_sequence(batch_subwords, padding_value=subword_pad_id)
-
-            if crf:
-                logits, tag_seq = model(batch_words.T, batch_subwords)
-                pred_tags.extend(tag_seq)
-            else:
-                logits = model(batch_words, batch_subwords)
-                batch_pred_tags = torch.max(logits, dim=-1).indices.T
-                pred_tags.extend(batch_pred_tags.tolist())
-
-
-    for i, sentence in enumerate(pred_tags):
-        for j, tag in enumerate(sentence):
-            predict_file.write("%s\t%s\n" % (test_words[i][j], index2tag[tag]))
+    # predict_file.write("TOKEN\tUPOS\n")
+    #
+    # pred_tags = []
+    #
+    # with torch.no_grad():
+    #     for batch_num, batch_pos in enumerate(range(0, len(test_word_ids), batch_size)):
+    #         batch_words = test_word_ids[batch_pos: batch_pos + batch_size]
+    #         batch_words = [torch.tensor(batch_words[i]) for i in range(len(batch_words))]
+    #         batch_words = pad_sequence(batch_words, padding_value=word_pad_id)
+    #
+    #         batch_len = batch_words.shape[0]
+    #         batch_subwords = test_subword_ids[batch_pos: batch_pos + batch_size]
+    #         batch_subwords = [ls + [[subword_pad_id]] * (batch_len - len(ls)) for ls in batch_subwords]
+    #         batch_subwords = [item for ls in batch_subwords for item in ls]
+    #         batch_subwords = [torch.tensor(batch_subwords[i]) for i in range(len(batch_subwords))]
+    #         batch_subwords = pad_sequence(batch_subwords, padding_value=subword_pad_id)
+    #
+    #         if crf:
+    #             logits, tag_seq = model(batch_words.T, batch_subwords)
+    #             pred_tags.extend(tag_seq)
+    #         else:
+    #             logits = model(batch_words, batch_subwords)
+    #             batch_pred_tags = torch.max(logits, dim=-1).indices.T
+    #             pred_tags.extend(batch_pred_tags.tolist())
+    #
+    #
+    # for i, sentence in enumerate(pred_tags):
+    #     for j, tag in enumerate(sentence):
+    #         predict_file.write("%s\t%s\n" % (test_words[i][j], index2tag[tag]))
 
 
 if __name__ == '__main__':
@@ -694,16 +695,73 @@ if __name__ == '__main__':
     params["log_interval"] = 10
     #train_one_model(params)  ##87
 
-    train_paths = ["../data/train/ss.gold.train"]#, "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
+    output_path = "log.txt"
+    output_file = open(output_path, "w")
+    output_file.close()
+    predict_path = "prediction.tsv"
+    all_train_paths = ["../data/train/nr.gold.train", "../data/train/xh.gold.train", "../data/train/zu.gold.train", "../data/train/ss.gold.train"]
+    all_test_paths = ["../data/gold/nr.gold.test", "../data/gold/xh.gold.test", "../data/gold/zu.gold.test",  "../data/gold/ss.gold.test"]
+
+    system_results1 = ""
+    system_results2 = ""
+    system_results3 = ""
+    system_results4 = ""
+    for j in range(len(all_train_paths)):
+        print(all_train_paths[j])
+
+        # char + sum
+        params["comp"] = "sum"
+        test_words, test_subwords = read_raw_test_dataset(all_test_paths[0], tokenize=tokenize_chars)
+        train_words, train_subwords, train_tags = read_raw_train_dataset(dataset_path=all_train_paths[0],  tokenize=tokenize_chars)
+        acc, f1 = test_model(train_words, train_subwords, train_tags, test_words, test_subwords, predict_path)
+        system_results1 += " & " + acc + " & " + f1
+
+        # char + lstm
+        params["comp"] = "lstm"
+        predict_path = "prediction.tsv"
+        test_words, test_subwords = read_raw_test_dataset(all_test_paths[0], tokenize=tokenize_chars)
+        train_words, train_subwords, train_tags = read_raw_train_dataset(dataset_path=all_train_paths[0], tokenize=tokenize_chars)
+        acc, f1 = test_model(train_words, train_subwords, train_tags, test_words, test_subwords, predict_path)
+        system_results2 += " & " + acc + " & " + f1
+
+        # ngram + sum
+        MAX_N = 2
+        params["comp"] = "sum"
+        predict_path = "prediction.tsv"
+        test_words, test_subwords = read_raw_test_dataset(all_test_paths[0], tokenize=tokenize_char_ngrams)
+        train_words, train_subwords, train_tags = read_raw_train_dataset(dataset_path=all_train_paths[0],  tokenize=tokenize_char_ngrams)
+        acc, f1 = test_model(train_words, train_subwords, train_tags, test_words, test_subwords, predict_path)
+        system_results3 += " & " + acc + " & " + f1
+
+        # ngram + lstm
+        MAX_N = 2
+        params["comp"] = "lstm"
+        predict_path = "prediction.tsv"
+        test_words, test_subwords = read_raw_test_dataset(all_test_paths[0], tokenize=tokenize_char_ngrams)
+        train_words, train_subwords, train_tags = read_raw_train_dataset(dataset_path=all_train_paths[0], tokenize=tokenize_char_ngrams)
+        acc, f1 = test_model(train_words, train_subwords, train_tags, test_words, test_subwords, predict_path)
+        system_results4 += " & " + acc + " & " + f1
+
+
+
+    print(system_results1)
+    print(system_results2)
+    print(system_results3)
+    print(system_results4)
+
+
+
+    train_paths = ["../data/train/xh.gold.train"]#, "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
     # dev_paths = ["../data/dev/xh.gold.dev", "../data/dev/zu.gold.dev", "../data/dev/nr.gold.dev", "../data/dev/ss.gold.dev"]
-    test_paths = ["../data/test/ss.test"] #, "../data/test/zu.test", "../data/test/nr.test", "../data/test/ss.test"]
+    test_paths = ["../data/gold/xh.gold.test"] #, "../data/test/zu.test", "../data/test/nr.test", "../data/test/ss.test"]
+
+
+
 
     #train_words, train_tags, word2index, tag2index, index2tag = read_train_datasets(train_paths)
     #dev_words, dev_tags = read_dev_datasets(dev_paths, word2index, tag2index)
 
-    output_path = "log.txt"
-    output_file = open(output_path, "w")
-    output_file.close()
+
 
     # MAX_N = 3
     # train_words, train_subwords, train_tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
@@ -717,16 +775,7 @@ if __name__ == '__main__':
 
 
 
-    print("NGRAMS=3")
-    MAX_N = 2
-    predict_path = "ss_prediction.tsv"
-    test_words, test_subwords = read_raw_test_dataset(test_paths[0], tokenize=tokenize_char_ngrams)
-    train_words, train_subwords, train_tags = read_raw_datasets(dataset_paths=train_paths, tokenize=tokenize_char_ngrams)
-    train_words = train_words[0]
-    train_subwords = train_subwords[0]
-    train_tags = train_tags[0]
 
-    test_model(train_words, train_subwords, train_tags, test_words, test_subwords, predict_path)
     #
     #
 
