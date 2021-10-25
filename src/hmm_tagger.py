@@ -2,6 +2,48 @@ import re
 import sys
 import math
 import string
+from sklearn.metrics import f1_score
+
+
+def compute_scores(gold_tags, pred_tags, tag2index):
+    total = 0
+    correct = 0
+
+    gold_tags_flat = []
+    pred_tags_flat = []
+
+    for i in range(len(pred_tags)):
+        for j in range(len(pred_tags[i])):
+            # this_word = index2word[sentence[i]]
+            # if all(ch in string.punctuation for ch in this_word) or this_word == "<s>":
+            #     num_test_tokens -= 1
+            #     continue
+            # if gold_tags[i][j] == tag2index["<pad>"]:
+            #     break
+
+            total += 1
+            if pred_tags[i][j] == gold_tags[i][j]:
+                correct += 1
+
+        seq_len = len(gold_tags[i])
+
+        if len(gold_tags[i][0: seq_len]) != len(pred_tags[i][0: seq_len]):
+            print(len(gold_tags[i][0: seq_len]), len(pred_tags[i][0: seq_len]))
+            print(gold_tags[i])
+            print(pred_tags[i])
+            print("--------------------------------------------------------------")
+
+        gold_tags_flat.extend(gold_tags[i][0: seq_len])
+        pred_tags_flat.extend(pred_tags[i][0: seq_len])
+
+    #gold_tags_flat = [item for ls in gold_tags for item in ls]
+    #pred_tags_flat = [item for ls in pred_tags for item in ls]
+
+    acc = (correct + 0.0) / total
+    f1 = f1_score(y_true=gold_tags_flat, y_pred=pred_tags_flat, average="macro")
+
+    return acc, f1
+
 
 def interpl(bigram_p, unigram_p):
     factor = 0.6
@@ -76,7 +118,8 @@ def read_dev_dataset(dataset_path, words, tags, word2index, tag2index):
         if line.strip() == "":
             continue
 
-        if line.strip() == "," or line.strip() == "":
+        word, morphs, lemma, xpos, tag = line.rsplit("\t", maxsplit=4)
+        if word == ".":
             new_sent = True
         else:
             if new_sent:
@@ -84,7 +127,7 @@ def read_dev_dataset(dataset_path, words, tags, word2index, tag2index):
                 tags.append([0])
                 new_sent = False
 
-            word, morphs, tag = line.rsplit("\t", maxsplit=2)
+
             if word == "" and tag != "":
                 word = "."
 
@@ -114,8 +157,8 @@ def read_dev_datasets(dataset_paths):
 
 if __name__ == '__main__':
 
-    train_paths = ["../data/train/xh.gold.train", "../data/train/zu.gold.train", "../data/train/nr.gold.train", "../data/train/ss.gold.train"]
-    dev_paths = ["../data/dev/xh.gold.dev", "../data/dev/zu.gold.dev", "../data/dev/nr.gold.dev", "../data/dev/ss.gold.dev"]
+    train_paths = ["../data/train/ss.gold.train"]
+    dev_paths = ["../data/gold/ss.gold.test"]
 
     train_words, train_tags, word2index, tag2index, index2tag = read_train_datasets(train_paths)
     print(len(train_words))
@@ -199,6 +242,9 @@ if __name__ == '__main__':
     num_correct_tokens = 0
     index2word = {v: k for k, v in word2index.items()}
 
+    pred_tags = []
+    gold_tags = []
+
     # viterbi decoding
     for j, sent in enumerate(dev_words):
         forward_prob = []
@@ -227,9 +273,12 @@ if __name__ == '__main__':
             best_path.append(back_index[k][best_path[-1]])
         best_path.reverse()
         num_test_tokens += len(dev_tags[j])
+
+        pred_tags.append(best_path[1:])
+        gold_tags.append(dev_tags[j][1:])
         for i in range(len(dev_tags[j])):
             this_word = index2word[sent[i]]
-            if all(ch in string.punctuation for ch in this_word) or this_word == "<s>":
+            if this_word == "<s>":
                 num_test_tokens -= 1
                 continue
 
@@ -237,5 +286,11 @@ if __name__ == '__main__':
                 num_correct_tokens += 1
 
 
+
     acc = (num_correct_tokens + 0.0) / num_test_tokens
     print(acc)
+    acc, f1 = compute_scores(gold_tags, pred_tags, tag2index)
+    acc *= 100
+    f1 *= 100
+    print("{:.2f}".format(acc), "{:.2f}".format(f1))
+
